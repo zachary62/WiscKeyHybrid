@@ -10,3 +10,5 @@ if err != nil {
 	return err
 }
 ```
+
+The graphs of the results are made using zplot http://pages.cs.wisc.edu/~remzi/Zplot/z-plot/docs/index.html.
