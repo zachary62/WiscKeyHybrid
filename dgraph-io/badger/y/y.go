@@ -122,6 +122,12 @@ func ParseTs(key []byte) uint64 {
 // All keys should have timestamp.
 func CompareKeys(key1 []byte, key2 []byte) int {
 	AssertTrue(len(key1) > 8 && len(key2) > 8)
+	if len(key1) > len(key2){
+		return 1
+	}
+	if len(key1) < len(key2){
+		return -1
+	}
 	if cmp := bytes.Compare(key1[:len(key1)-8], key2[:len(key2)-8]); cmp != 0 {
 		return cmp
 	}

@@ -50,6 +50,7 @@ type closers struct {
 	memtable   *y.Closer
 	writes     *y.Closer
 	valueGC    *y.Closer
+	move			 *y.Closer
 }
 
 // DB provides the various functions required to interact with Badger.
@@ -71,6 +72,7 @@ type DB struct {
 	vlog      valueLog
 	vptr      valuePointer // less than or equal to a pointer to the last vlog value put into mt
 	writeCh   chan *request
+	moveCh		chan *movereq
 	flushChan chan flushTask // For flushing memtables.
 
 	blockWrites int32
@@ -252,6 +254,7 @@ func Open(opt Options) (db *DB, err error) {
 		imm:           make([]*skl.Skiplist, 0, opt.NumMemtables),
 		flushChan:     make(chan flushTask, opt.NumMemtables),
 		writeCh:       make(chan *request, kvWriteChCapacity),
+		moveCh:       make(chan *movereq, kvWriteChCapacity),
 		opt:           opt,
 		manifest:      manifestFile,
 		elog:          trace.NewEventLog("Badger", "DB"),
@@ -326,6 +329,9 @@ func Open(opt Options) (db *DB, err error) {
 
 	db.closers.valueGC = y.NewCloser(1)
 	go db.vlog.waitOnGC(db.closers.valueGC)
+
+	db.closers.move = y.NewCloser(1)
+	go db.doMove(db.closers.move)
 
 	valueDirLockGuard = nil
 	dirLockGuard = nil
@@ -650,6 +656,57 @@ func (db *DB) sendToWriteCh(entries []*Entry) (*request, error) {
 	return req, nil
 }
 
+type movereq struct {
+	//start range
+	start []byte
+	//end range
+	end []byte
+
+	moveToLSM bool
+}
+
+func (db *DB) SendTomoveCh(start []byte, end []byte, moveToLSM bool) {
+	//always choose the smaller one to start
+	if y.CompareKeys(start,end) < 0 {
+		move := &movereq{start, end, moveToLSM}
+		db.moveCh <- move // Handled in doMove.
+	}
+	if y.CompareKeys(start,end) > 0 {
+		move := &movereq{end, start, moveToLSM}
+		db.moveCh <- move // Handled in doMove.
+	}
+}
+
+func (db *DB) doMove(lc *y.Closer) {
+	defer lc.Done()
+	pendingCh := make(chan struct{}, 1)
+	moveRequest := func(move *movereq) {
+		if err := db.moveValue(move); err != nil {
+			log.Printf("ERROR in Badger::writeRequests: %v", err)
+		}
+		<-pendingCh
+	}
+
+	for {
+		var move *movereq
+		select {
+		case move = <-db.moveCh:
+			goto writeCase
+		case <-lc.HasBeenClosed():
+			goto closedCase
+		}
+
+	closedCase:
+		//we don't need to do all the moves because it is accepatble to delay them
+		close(db.moveCh)
+		return
+
+	writeCase:
+		pendingCh <- struct{}{}
+		go moveRequest(move)
+	}
+}
+
 func (db *DB) doWrites(lc *y.Closer) {
 	defer lc.Done()
 	pendingCh := make(chan struct{}, 1)
@@ -935,6 +992,9 @@ func (db *DB) updateSize(lc *y.Closer) {
 	}
 }
 
+func (db *DB) TotalCommit() int64 {
+	return db.orc.GetcomCount()
+}
 // RunValueLogGC triggers a value log garbage collection.
 //
 // It picks value log files to perform GC based on statistics that are collected
@@ -994,6 +1054,109 @@ func (db *DB) Size() (lsm int64, vlog int64) {
 	lsm = y.LSMSize.Get(db.opt.Dir).(*expvar.Int).Value()
 	vlog = y.VlogSize.Get(db.opt.Dir).(*expvar.Int).Value()
 	return
+}
+
+//Wait time for move process grows gradually
+//this is to avoid rush hour
+func growWait(t int) int{
+	t = t*2 +20
+	if t >=5000 {
+		return 5000
+	}
+	return t
+}
+
+// move Value to LSM tree or vlog according to move request
+// this should be done lazily
+// should not conflict with other transaction
+func (db *DB) moveValue(move *movereq) error{
+	//log.Printf("move from %s to %s whether to LSM %t\n", move.start, move.end, move.moveToLSM)
+	t := 0
+	retry:
+		comCount := db.TotalCommit()
+		// log.Printf("comCount = %d!\n",comCount)
+		time.Sleep(time.Duration(t) * time.Millisecond)
+		t = growWait(t)
+		// comCount2 := db.TotalCommit()
+		// log.Printf("comCount2 = %d!\n",comCount2)
+		// Start a writable transaction.
+	  txn := db.NewTransaction(true)
+	  itopts := DefaultIteratorOptions
+	  it := txn.NewIterator(itopts)
+		for it.Seek(move.start); it.Valid(); it.Next() {
+
+		    item := it.Item()
+		    k := item.Key()
+				if y.CompareKeys(k, move.end) > 0 {
+					break;
+				}
+		    v, err := item.Value()
+		    if err != nil {
+					txn.Discard()
+		      return err
+		    }
+		    //log.Printf("key=%s\n", k)
+				if item.IsInLSM() && !move.moveToLSM{
+					//log.Printf("move to vlog!\n")
+					err = txn.Set(k, v);
+					//if transaction too big! commit now
+					if  err != nil {
+						//log.Printf("too big!\n")
+						it.Close()
+						if err := txn.CommitOnly(nil, comCount); err == errMultiCom|| err ==ErrConflict {
+							 //other concurrent problems happen
+							 txn.Discard()
+							 goto retry
+					 } else if err != nil{
+						 	 //unexpected error
+							 txn.Discard()
+							 return err
+					 }
+					 //then move the other data
+					 move.start = k
+	         goto retry
+				 }
+
+				} else if !item.IsInLSM() && move.moveToLSM{
+					//log.Printf("move to LSM!\n")
+					err = txn.LevelDBSet(k, v);
+					//if transaction too big! commit now
+					if  err != nil {
+						//log.Printf("too big!\n")
+						it.Close()
+						if err := txn.CommitOnly(nil, comCount); err == errMultiCom|| err ==ErrConflict {
+							 //other concurrent problems happen
+							 txn.Discard()
+							 goto retry
+					 } else if err != nil{
+						 	 //unexpected error
+							 txn.Discard()
+							 return err
+					 }
+					 //then move the other data
+					 move.start = k
+	         goto retry
+				}
+			}
+		}
+
+		it.Close()
+
+	  // Commit the transaction and check for error.
+	  if err := txn.CommitOnly(nil, comCount); err == errMultiCom|| err ==ErrConflict {
+			  //log.Printf("a commit happens!\n")
+				//if there is a conflict, retry
+				//besides, backgroung should always commit before any other commit
+				//if errMultiCom happens, also retry everything
+				txn.Discard()
+				goto retry
+	  } else if err != nil{
+				txn.Discard()
+				return err
+		}
+		log.Printf("good!\n")
+
+		return nil
 }
 
 // Sequence represents a Badger sequence.

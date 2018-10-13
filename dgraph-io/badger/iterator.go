@@ -140,6 +140,12 @@ func (item *Item) DiscardEarlierVersions() bool {
 	return item.meta&bitDiscardEarlierVersions > 0
 }
 
+//IsInLSM returns true if item store value in LSM tree
+func (item *Item) IsInLSM() bool {
+	return item.meta & bitValuePointer == 0
+}
+
+
 func (item *Item) yieldItemValue() ([]byte, func(), error) {
 	key := item.Key() // No need to copy.
 	for {

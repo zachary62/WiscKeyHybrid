@@ -33,6 +33,7 @@ type oracle struct {
 	// curRead must be at the top for memory alignment. See issue #311.
 	curRead   uint64 // Managed by the mutex.
 	refCount  int64
+	commitCount int64
 	isManaged bool // Does not change value, so no locking required.
 
 	sync.Mutex
@@ -47,6 +48,14 @@ type oracle struct {
 	// commits stores a key fingerprint and latest commit counter for it.
 	// refCount is used to clear out commits map to avoid a memory blowup.
 	commits map[uint64]uint64
+}
+
+func (o *oracle) addcomCount() {
+	atomic.AddInt64(&o.commitCount, 1)
+}
+
+func (o *oracle) GetcomCount()int64 {
+	return atomic.LoadInt64(&o.commitCount)
 }
 
 func (o *oracle) addRef() {
@@ -191,7 +200,14 @@ func (pi *pendingWritesIterator) Rewind() {
 func (pi *pendingWritesIterator) Seek(key []byte) {
 	key = y.ParseKey(key)
 	pi.nextIdx = sort.Search(len(pi.entries), func(idx int) bool {
-		cmp := bytes.Compare(pi.entries[idx].Key, key)
+		var cmp int
+		if len(pi.entries[idx].Key) > len(key){
+			cmp = 1
+		} else if len(pi.entries[idx].Key) < len(key){
+			cmp = -1
+		} else {
+			cmp = bytes.Compare(pi.entries[idx].Key, key)
+		}
 		if !pi.reversed {
 			return cmp >= 0
 		}
@@ -498,6 +514,7 @@ func (txn *Txn) Commit(callback func(error)) error {
 	state := txn.db.orc
 	state.writeLock.Lock()
 	commitTs := state.newCommitTs(txn)
+
 	if commitTs == 0 {
 		state.writeLock.Unlock()
 		return ErrConflict
@@ -517,7 +534,79 @@ func (txn *Txn) Commit(callback func(error)) error {
 		meta:  bitFinTxn,
 	}
 	entries = append(entries, e)
+	txn.db.orc.addcomCount()
+	req, err := txn.db.sendToWriteCh(entries)
+	state.writeLock.Unlock()
+	if err != nil {
+		return err
+	}
 
+	// Need to release all locks or writes can get deadlocked.
+	txn.runCallbacks()
+
+	if callback == nil {
+		// If batchSet failed, LSM would not have been updated. So, no need to rollback anything.
+
+		// TODO: What if some of the txns successfully make it to value log, but others fail.
+		// Nothing gets updated to LSM, until a restart happens.
+		defer state.doneCommit(commitTs)
+		return req.Wait()
+	}
+	go func() {
+		err := req.Wait()
+		// Write is complete. Let's call the callback function now.
+		state.doneCommit(commitTs)
+		callback(err)
+	}()
+	return nil
+}
+
+var errMultiCom = errors.New("Other commit happens before this commit")
+
+//CommitOnly returns errMultiCom if other commit happens before this commit
+//rewrite this function in the future to make it lightweight
+func (txn *Txn) CommitOnly(callback func(error), comCount int64) error {
+	if txn.commitTs == 0 && txn.db.opt.managedTxns {
+		return ErrManagedTxn
+	}
+	if txn.discarded {
+		return ErrDiscardedTxn
+	}
+	defer txn.Discard()
+	if len(txn.writes) == 0 {
+		return nil // Nothing to do.
+	}
+
+	state := txn.db.orc
+	state.writeLock.Lock()
+
+	if txn.db.TotalCommit() > comCount {
+		state.writeLock.Unlock()
+		return errMultiCom
+	}
+
+	commitTs := state.newCommitTs(txn)
+
+	if commitTs == 0 {
+		state.writeLock.Unlock()
+		return ErrConflict
+	}
+
+	entries := make([]*Entry, 0, len(txn.pendingWrites)+1)
+	for _, e := range txn.pendingWrites {
+		// Suffix the keys with commit ts, so the key versions are sorted in
+		// descending order of commit timestamp.
+		e.Key = y.KeyWithTs(e.Key, commitTs)
+		e.meta |= bitTxn
+		entries = append(entries, e)
+	}
+	e := &Entry{
+		Key:   y.KeyWithTs(txnKey, commitTs),
+		Value: []byte(strconv.FormatUint(commitTs, 10)),
+		meta:  bitFinTxn,
+	}
+	entries = append(entries, e)
+	txn.db.orc.addcomCount()
 	req, err := txn.db.sendToWriteCh(entries)
 	state.writeLock.Unlock()
 	if err != nil {
