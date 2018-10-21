@@ -11,4 +11,13 @@ if err != nil {
 }
 ```
 
+A more smart Set method is under development! You can use txn.HybridSet() method:
+```go
+err := txn.HybridSet([]byte("key"), []byte("value"))
+if err != nil {
+	return err
+}
+```
+This HybridSet will store the data according to your usage patterns.
+
 The graphs of the results are made using zplot http://pages.cs.wisc.edu/~remzi/Zplot/z-plot/docs/index.html.

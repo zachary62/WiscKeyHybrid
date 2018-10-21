@@ -314,12 +314,12 @@ type Iterator struct {
 	iitr   *y.MergeIterator
 	txn    *Txn
 	readTs uint64
-
+ 	inner  bool //is it inner iterator? use by move process to decide whether send stat to Manager
 	opt   IteratorOptions
 	item  *Item
 	data  list
 	waste list
-
+	firstKey []byte
 	lastKey []byte // Used to skip over multiple versions of the same key.
 }
 
@@ -347,9 +347,14 @@ func (txn *Txn) NewIterator(opt IteratorOptions) *Iterator {
 		txn:    txn,
 		iitr:   y.NewMergeIterator(iters, opt.Reverse),
 		opt:    opt,
+		inner:  false,
 		readTs: txn.readTs,
 	}
 	return res
+}
+
+func (it *Iterator) isinner() {
+	it.inner = true
 }
 
 func (it *Iterator) newItem() *Item {
@@ -382,6 +387,9 @@ func (it *Iterator) ValidForPrefix(prefix []byte) bool {
 
 // Close would close the iterator. It is important to call this when you're done with iteration.
 func (it *Iterator) Close() {
+	if !it.inner && len(it.firstKey)!=0 && len(it.lastKey)!=0{
+		it.txn.db.mgr.AddSeg(it.firstKey[:len(it.firstKey)-8], it.lastKey[:len(it.lastKey)-8], 5)
+	}
 	it.iitr.Close()
 
 	// It is important to wait for the fill goroutines to finish. Otherwise, we might leave zombie
@@ -436,6 +444,7 @@ func isDeletedOrExpired(meta byte, expiresAt uint64) bool {
 // forward iteration is more common than reverse.
 //
 // This function advances the iterator.
+//TODO: for sending message to manager, consider the situations of rewind and seek!
 func (it *Iterator) parseItem() bool {
 	mi := it.iitr
 	key := mi.Key()
@@ -484,6 +493,9 @@ func (it *Iterator) parseItem() bool {
 		// Then we see b 7, which is deleted. If we don't store lastKey = b, we'll then return b 5,
 		// which is wrong. Therefore, update lastKey here.
 		it.lastKey = y.SafeCopy(it.lastKey, mi.Key())
+		if len(it.firstKey) == 0{
+			it.firstKey = y.SafeCopy(it.firstKey, mi.Key())
+		}
 	}
 
 FILL:

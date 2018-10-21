@@ -300,6 +300,16 @@ func (txn *Txn) LevelDBSet(key, val []byte) error {
 	return txn.SetEntry(e)
 }
 
+// HybridSet store a key-value pair to vlog if value size is larger than 62KB
+// Otherwise, it uses Manager to help it decide
+func (txn *Txn) HybridSet(key, val []byte) error {
+	if len(val) > 62*1024 || !txn.db.mgr.StoreInLSM(key){
+		return txn.Set(key, val)
+	} else {
+		return txn.LevelDBSet(key, val)
+	}
+}
+
 // SetWithMeta adds a key-value pair to the database, along with a metadata
 // byte.
 //
@@ -401,6 +411,7 @@ func (txn *Txn) Delete(key []byte) error {
 // Get looks for key and returns corresponding Item.
 // If key is not found, ErrKeyNotFound is returned.
 func (txn *Txn) Get(key []byte) (item *Item, rerr error) {
+	txn.db.mgr.AddCool()
 	if len(key) == 0 {
 		return nil, ErrEmptyKey
 	} else if txn.discarded {

@@ -69,6 +69,7 @@ type DB struct {
 	opt       Options
 	manifest  *manifestFile
 	lc        *levelsController
+	mgr  			*manager
 	vlog      valueLog
 	vptr      valuePointer // less than or equal to a pointer to the last vlog value put into mt
 	writeCh   chan *request
@@ -254,7 +255,7 @@ func Open(opt Options) (db *DB, err error) {
 		imm:           make([]*skl.Skiplist, 0, opt.NumMemtables),
 		flushChan:     make(chan flushTask, opt.NumMemtables),
 		writeCh:       make(chan *request, kvWriteChCapacity),
-		moveCh:       make(chan *movereq, kvWriteChCapacity),
+		moveCh:        make(chan *movereq, kvWriteChCapacity),
 		opt:           opt,
 		manifest:      manifestFile,
 		elog:          trace.NewEventLog("Badger", "DB"),
@@ -273,6 +274,8 @@ func Open(opt Options) (db *DB, err error) {
 	if db.lc, err = newLevelsController(db, &manifest); err != nil {
 		return nil, err
 	}
+
+	db.mgr = newManager(db,10,4,2)
 
 	if !opt.ReadOnly {
 		db.closers.compactors = y.NewCloser(1)
@@ -347,7 +350,10 @@ func (db *DB) Close() (err error) {
 	// Stop value GC first.
 	db.closers.valueGC.SignalAndWait()
 
-	// Stop writes next.
+	// Stop move next.
+	db.closers.move.SignalAndWait()
+
+	// Stop writes then.
 	db.closers.writes.SignalAndWait()
 
 	// Now close the value log.
@@ -667,11 +673,11 @@ type movereq struct {
 
 func (db *DB) SendTomoveCh(start []byte, end []byte, moveToLSM bool) {
 	//always choose the smaller one to start
-	if y.CompareKeys(start,end) < 0 {
+	if y.ComparePureKeys(start,end) < 0 {
 		move := &movereq{start, end, moveToLSM}
 		db.moveCh <- move // Handled in doMove.
 	}
-	if y.CompareKeys(start,end) > 0 {
+	if y.ComparePureKeys(start,end) > 0 {
 		move := &movereq{end, start, moveToLSM}
 		db.moveCh <- move // Handled in doMove.
 	}
@@ -698,6 +704,7 @@ func (db *DB) doMove(lc *y.Closer) {
 
 	closedCase:
 		//we don't need to do all the moves because it is accepatble to delay them
+		pendingCh <- struct{}{}
 		close(db.moveCh)
 		return
 
@@ -1069,8 +1076,9 @@ func growWait(t int) int{
 // move Value to LSM tree or vlog according to move request
 // this should be done lazily
 // should not conflict with other transaction
+// movaValue will move iff the destination and current place are different and value size is smaller than 62KB
 func (db *DB) moveValue(move *movereq) error{
-	//log.Printf("move from %s to %s whether to LSM %t\n", move.start, move.end, move.moveToLSM)
+	log.Printf("move from %s to %s whether to LSM %t\n", move.start, move.end, move.moveToLSM)
 	t := 0
 	retry:
 		comCount := db.TotalCommit()
@@ -1083,11 +1091,12 @@ func (db *DB) moveValue(move *movereq) error{
 	  txn := db.NewTransaction(true)
 	  itopts := DefaultIteratorOptions
 	  it := txn.NewIterator(itopts)
+		it.isinner()
 		for it.Seek(move.start); it.Valid(); it.Next() {
 
 		    item := it.Item()
 		    k := item.Key()
-				if y.CompareKeys(k, move.end) > 0 {
+				if y.ComparePureKeys(k, move.end) > 0 {
 					break;
 				}
 		    v, err := item.Value()
@@ -1095,6 +1104,9 @@ func (db *DB) moveValue(move *movereq) error{
 					txn.Discard()
 		      return err
 		    }
+				if len(v) > 62*1024 {
+					continue
+				}
 		    //log.Printf("key=%s\n", k)
 				if item.IsInLSM() && !move.moveToLSM{
 					//log.Printf("move to vlog!\n")
@@ -1154,6 +1166,7 @@ func (db *DB) moveValue(move *movereq) error{
 				txn.Discard()
 				return err
 		}
+		db.mgr.SetInLSM(move.start, move.end, move.moveToLSM)
 		log.Printf("good!\n")
 
 		return nil
