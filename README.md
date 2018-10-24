@@ -5,7 +5,7 @@ when value size is small. Therefore, we could design a managed storage hierarchy
 performance advantages of LevelDB with Wisckey by storing the frequently range queried data into LSM
 tree directly.
 
-![illustration](http://url/to/img.png)
+![illustration](image/manage.png)
 
 During the data load, the storage manager should decide where the values will be inserted. For value
 size smaller than 4 bytes, it is directly inserted into LSM tree because it is smaller than the address size.
