@@ -353,7 +353,7 @@ func (txn *Txn) NewIterator(opt IteratorOptions) *Iterator {
 	return res
 }
 
-func (it *Iterator) isinner() {
+func (it *Iterator) Isinner() {
 	it.inner = true
 }
 
@@ -385,11 +385,23 @@ func (it *Iterator) ValidForPrefix(prefix []byte) bool {
 	return it.item != nil && bytes.HasPrefix(it.item.key, prefix)
 }
 
+//Send to Manager the range query pattern
+//Neglect if it is an inner iterator or key range is too small
+//Clear the lastKey afterwards
+//Use SafeCopy (see TestInterator2 in manager_test)
+func (it *Iterator) SendToManager() {
+	if !it.inner && len(it.firstKey)!=0 && len(it.lastKey)!=0{
+		var start, end []byte
+		start = y.SafeCopy(start, it.firstKey[:len(it.firstKey)-8])
+		end = y.SafeCopy(end, it.lastKey[:len(it.lastKey)-8])
+		it.txn.db.mgr.AddSeg(start, end, 5)
+		it.firstKey = it.firstKey[:0]
+	}
+}
+
 // Close would close the iterator. It is important to call this when you're done with iteration.
 func (it *Iterator) Close() {
-	if !it.inner && len(it.firstKey)!=0 && len(it.lastKey)!=0{
-		it.txn.db.mgr.AddSeg(it.firstKey[:len(it.firstKey)-8], it.lastKey[:len(it.lastKey)-8], 5)
-	}
+	it.SendToManager()
 	it.iitr.Close()
 
 	// It is important to wait for the fill goroutines to finish. Otherwise, we might leave zombie
@@ -574,6 +586,7 @@ func (it *Iterator) prefetch() {
 // greater than provided if iterating in the forward direction. Behavior would be reversed is
 // iterating backwards.
 func (it *Iterator) Seek(key []byte) {
+	it.SendToManager()
 	for i := it.data.pop(); i != nil; i = it.data.pop() {
 		i.wg.Wait()
 		it.waste.push(i)
@@ -599,6 +612,7 @@ func (it *Iterator) Seek(key []byte) {
 // smallest key if iterating forward, and largest if iterating backward. It does not keep track of
 // whether the cursor started with a Seek().
 func (it *Iterator) Rewind() {
+	it.SendToManager()
 	i := it.data.pop()
 	for i != nil {
 		i.wg.Wait() // Just cleaner to wait before pushing. No ref counting needed.

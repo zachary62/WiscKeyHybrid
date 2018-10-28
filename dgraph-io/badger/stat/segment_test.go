@@ -4,12 +4,14 @@ import (
 	"testing"
 	"sync"
 	"github.com/dgraph-io/badger/y"
+	"io/ioutil"
+	"os"
 )
 
 func TestAddheat(t *testing.T) {
 	t.Log("Testing adding heat to segstat with 1000... (expected heat: 1000)")
 	ss := &segstat{heat: 0, inLSM: false}
-	if heat := ss.addheat(1000); heat != 1000 {
+	if heat := ss.addheat(250); heat != 250 {
 		t.Errorf("Expected heat of 1000, but it was %d instead.", heat)
 	}
 }
@@ -18,15 +20,15 @@ func TestAddheatMulti(t *testing.T) {
 	t.Log("Testing adding heat to segstat with 1000 threads... (expected heat: 1000)")
 	ss := &segstat{heat: 0, inLSM: false}
 	var wg sync.WaitGroup
-	wg.Add(999)
-	for i := 0; i < 999; i++ {
+	wg.Add(250)
+	for i := 0; i < 250; i++ {
 	    go func() {
 	        defer wg.Done()
 	        ss.addheat(1)
 	    }()
 	}
 	wg.Wait()
-	if heat := ss.addheat(1); heat != 1000 {
+	if heat := ss.addheat(1); heat != 250 {
 		t.Errorf("Expected heat of 1000, but it was %d instead.", heat)
 	}
 }
@@ -324,4 +326,35 @@ func TestOverlapCoalesce3(t *testing.T) {
 	if _,_,_,find := segt.FindSeg([]byte{10*10,0,0}); find{
 		t.Errorf("Should not be found because Seg Table is full")
 	}
+}
+
+func TestWriteLoad(t *testing.T) {
+	t.Log("Testing writing and loading table ... ")
+	dir, err := ioutil.TempDir("", "badgerwl")
+	if err != nil {
+		t.Errorf("Unexpected error while using temporal directory %s.", err)
+	}
+	dir = dir + string(os.PathSeparator) + "table"
+	ss1 := NewSegTable(10,0,0)
+	ss1.segarray[0] = segstat{5,true,true,[]byte{5,2},[]byte{7,8}}
+  ss1.segarray[1] = segstat{119,false,true,[]byte{9},[]byte{4,8,10}}
+	ss1.segarray[2] = segstat{119,false,false,[]byte{9},[]byte{4,8,10}}
+	ss1.SaveTable(dir)
+	ss2 := NewSegTable(10,0,0)
+	ss2.LoadTable(dir)
+	for i := 0; i < 3; i++{
+		if ss1.segarray[i].valid != ss2.segarray[i].valid{
+			t.Errorf("The %d segments have different valid status in different tables, first table %t when second table %t.",i,ss1.segarray[i].valid,ss2.segarray[i].valid)
+		}
+		if !ss1.segarray[i].valid{
+			continue
+		}
+		if y.ComparePureKeys(ss1.segarray[i].start,ss2.segarray[i].start) != 0{
+			t.Errorf("The %d segments have different starts, the first is %v, the sond is %v.", i,ss1.segarray[i].start,ss2.segarray[i].start)
+		}
+		if y.ComparePureKeys(ss1.segarray[i].end,ss2.segarray[i].end) != 0{
+			t.Errorf("The %d segments have different starts, the first is %v, the sond is %v.", i,ss1.segarray[i].end,ss2.segarray[i].end)
+		}
+	}
+
 }

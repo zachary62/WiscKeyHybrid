@@ -27,6 +27,7 @@ import (
 	"github.com/dgraph-io/badger/y"
 	farm "github.com/dgryski/go-farm"
 	"github.com/pkg/errors"
+	//"log"
 )
 
 type oracle struct {
@@ -303,6 +304,7 @@ func (txn *Txn) LevelDBSet(key, val []byte) error {
 // HybridSet store a key-value pair to vlog if value size is larger than 62KB
 // Otherwise, it uses Manager to help it decide
 func (txn *Txn) HybridSet(key, val []byte) error {
+	//log.Printf("key is %v, should is %t \n", key, txn.db.mgr.StoreInLSM(key))
 	if len(val) > 62*1024 || !txn.db.mgr.StoreInLSM(key){
 		return txn.Set(key, val)
 	} else {

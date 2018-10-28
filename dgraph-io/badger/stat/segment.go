@@ -5,6 +5,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"github.com/dgraph-io/badger/y"
+	"io/ioutil"
+  "os"
 )
 
 type segstat struct {
@@ -23,8 +25,14 @@ type SegTable struct {
 	segarray 	[]segstat
 }
 
+//avoid overflow
+//for now 250 max
 func (seg *segstat) addheat(delta int32) int32 {
-	return atomic.AddInt32(&seg.heat, delta)
+	n := atomic.AddInt32(&seg.heat, delta)
+	if n > 250 {
+		n = atomic.AddInt32(&seg.heat, -delta)
+	}
+	return n
 }
 
 func NewSegTable(len uint32, bp int32, fp int32) *SegTable {
@@ -207,4 +215,67 @@ func (segt *SegTable) overlapCoalesceStart(index uint32) {
 			break;
 		}
 	}
+}
+
+//for every valid seg
+//first byte heat, second byte inLSM
+//start and end always begins with their lengths
+func (segt *SegTable) SaveTable(dir string) {
+	f, err := os.Create(dir)
+	y.Check(err)
+	defer f.Close()
+
+	segt.RLock()
+	for i := uint32(0); i < segt.length; i++ {
+		if segt.segarray[i].valid{
+			var k byte
+			if segt.segarray[i].inLSM == true {
+				k = 1
+			} else if segt.segarray[i].inLSM == false{
+					k = 0
+			}
+			f.Write([]byte{byte(segt.segarray[i].heat),k,byte(len(segt.segarray[i].start))})
+			f.Write(segt.segarray[i].start)
+			f.Write([]byte{byte(len(segt.segarray[i].end))})
+			f.Write(segt.segarray[i].end)
+		}
+	}
+	segt.RUnlock()
+	f.Sync()
+}
+
+//temporal seg file
+//TODO: a lot to consider:
+//make it more lightweight like other files in badger
+//let manager detect whether file exists
+//deal with error in a mild way
+//make heat larger, current 250 max because of byte restriction
+//how to process when heat larger than 250?
+//it will discard extra data
+//how to process when length is 0?
+func (segt *SegTable) LoadTable(dir string) {
+	segt.Lock()
+	b, err := ioutil.ReadFile(dir) // just pass the file name
+	y.Check(err)
+	cur := 0
+	for i := uint32(0); i < segt.length; i++ {
+		//check if have more segment
+		if len(b) == cur{
+			break
+		}
+		segt.segarray[i].heat = int32(b[cur])
+		y.AssertTruef(b[cur+1] == 1 || b[cur+1] == 0, "error inLSM while loading")
+		if b[cur+1] == 1{
+			segt.segarray[i].inLSM = true
+		} else if b[cur+1] == 0{
+			segt.segarray[i].inLSM = false
+		}
+		len1 := int(b[cur+2])
+		segt.segarray[i].start = b[cur+3:cur+3+len1]
+		len2 := int(b[cur+3+len1])
+		segt.segarray[i].end = b[cur+4+len1:cur+4+len1+len2]
+		cur = cur+4+len1+len2
+		segt.segarray[i].valid = true
+	}
+	segt.Unlock()
 }

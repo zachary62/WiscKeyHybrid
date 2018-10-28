@@ -6,6 +6,7 @@ import (
 	"sync/atomic"
 	"github.com/dgraph-io/badger/stat"
 	"github.com/dgraph-io/badger/y"
+	"os"
 )
 
 type segcache struct {
@@ -16,6 +17,7 @@ type segcache struct {
 	valid bool
 }
 
+//TODO let GC collect moved data
 type manager struct {
 	boilingp	int32	//when data moves to LSM
 	freezingp int32 //when data moves to vlog
@@ -25,12 +27,12 @@ type manager struct {
 	segt 			*stat.SegTable
 }
 
-func newManager(database *DB, len uint32, bp int32, fp int32) *manager {
+func newManager(database *DB, len uint32, bp int32, fp int32, cp int32) *manager {
 	return &manager{
 		segt:  		 stat.NewSegTable(len,bp,fp),
 		boilingp:	 bp,
 	  freezingp: fp,
-		coolingp:	 10,
+		coolingp:	 cp,
 		db:				 database,
 		segc:			 &segcache{valid: false},
 	}
@@ -43,10 +45,11 @@ func (mgr *manager) StoreInLSM(key []byte) bool {
 	mgr.segc.RLock()
 	if mgr.segc.valid && y.ComparePureKeys(key,mgr.segc.start) >= 0 && y.ComparePureKeys(key,mgr.segc.end) <= 0 {
 		mgr.segc.RUnlock()
+		log.Println("in cache")
 		return mgr.segc.inLSM
 	}
 	mgr.segc.RUnlock()
-	heat,end,_,find := mgr.segt.FindSeg([]byte{1,2})
+	heat,end,_,find := mgr.segt.FindSeg(key)
 	//store data in Vlog in default
 	if !find {
 		return false
@@ -62,6 +65,9 @@ func (mgr *manager) StoreInLSM(key []byte) bool {
 
 //add heat to a segment
 //do a move if necessary
+//Notice that iterator do prefetch, which will send a larger range
+//Currently, I just keep the larger range because even if prefetch is unnecessary at the end
+//It will promote performance during iterator and should not be turned off
 func (mgr *manager) AddSeg(start []byte, end []byte, heat int32) {
 	if y.ComparePureKeys(start,end) > 0 {
 		start, end = end, start
@@ -99,7 +105,7 @@ func (mgr *manager) AddCool() {
 		coolingp := atomic.AddInt32(&mgr.coolingp, -1)
 		if coolingp == 0 {
 			atomic.AddInt32(&mgr.coolingp, 10)
-			mgr.Cooling(0.5)
+			mgr.Cooling(0.1)
 		} else if coolingp < 0{
 			//a conflict occurs!
 			//cool is deducted more than once and should retry
@@ -107,4 +113,17 @@ func (mgr *manager) AddCool() {
 			atomic.AddInt32(&mgr.coolingp, 1)
 			goto retry
 		}
+}
+
+//for debug
+func (mgr *manager) PrintAll() {
+	mgr.segt.PrintAll()
+}
+
+func (mgr *manager) WriteSeg() {
+	mgr.segt.SaveTable(mgr.db.opt.Dir + string(os.PathSeparator) + "Segtable.data")
+}
+
+func (mgr *manager) LoadSeg() {
+	mgr.segt.LoadTable(mgr.db.opt.Dir + string(os.PathSeparator) + "Segtable.data")
 }

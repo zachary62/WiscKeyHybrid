@@ -275,7 +275,11 @@ func Open(opt Options) (db *DB, err error) {
 		return nil, err
 	}
 
-	db.mgr = newManager(db,10,4,2)
+	db.mgr = newManager(db,opt.Seglen,opt.Bp,opt.Fp,opt.Cp)
+
+	if opt.LoadSegM {
+		db.mgr.LoadSeg()
+	}
 
 	if !opt.ReadOnly {
 		db.closers.compactors = y.NewCloser(1)
@@ -427,6 +431,7 @@ func (db *DB) Close() (err error) {
 	db.closers.updateSize.SignalAndWait()
 
 	db.elog.Finish()
+	db.mgr.WriteSeg()
 
 	if db.dirLockGuard != nil {
 		if guardErr := db.dirLockGuard.release(); err == nil {
@@ -441,6 +446,8 @@ func (db *DB) Close() (err error) {
 	if manifestErr := db.manifest.close(); err == nil {
 		err = errors.Wrap(manifestErr, "DB.Close")
 	}
+
+
 
 	// Fsync directories to ensure that lock file, and any other removed files whose directory
 	// we haven't specifically fsynced, are guaranteed to have their directory entry removal
@@ -1078,9 +1085,11 @@ func growWait(t int) int{
 // should not conflict with other transaction
 // movaValue will move iff the destination and current place are different and value size is smaller than 62KB
 func (db *DB) moveValue(move *movereq) error{
-	log.Printf("move from %s to %s whether to LSM %t\n", move.start, move.end, move.moveToLSM)
+	//log.Printf("move from %s to %s whether to LSM %t\n", move.start, move.end, move.moveToLSM)
 	t := 0
+	tnum := 0
 	retry:
+		//log.Printf("move from %s to %s whether to LSM %t\n", move.start, move.end, move.moveToLSM)
 		comCount := db.TotalCommit()
 		// log.Printf("comCount = %d!\n",comCount)
 		time.Sleep(time.Duration(t) * time.Millisecond)
@@ -1091,15 +1100,17 @@ func (db *DB) moveValue(move *movereq) error{
 	  txn := db.NewTransaction(true)
 	  itopts := DefaultIteratorOptions
 	  it := txn.NewIterator(itopts)
-		it.isinner()
+		it.Isinner()
 		for it.Seek(move.start); it.Valid(); it.Next() {
-
+				tnum ++
 		    item := it.Item()
-		    k := item.Key()
+				var k []byte
+				k = y.SafeCopy(k,item.Key())
+				//log.Printf("Moving %s\n",k)
 				if y.ComparePureKeys(k, move.end) > 0 {
 					break;
 				}
-		    v, err := item.Value()
+		    v, err := item.ValueCopy(nil)
 		    if err != nil {
 					txn.Discard()
 		      return err
@@ -1110,6 +1121,7 @@ func (db *DB) moveValue(move *movereq) error{
 		    //log.Printf("key=%s\n", k)
 				if item.IsInLSM() && !move.moveToLSM{
 					//log.Printf("move to vlog!\n")
+
 					err = txn.Set(k, v);
 					//if transaction too big! commit now
 					if  err != nil {
@@ -1118,6 +1130,7 @@ func (db *DB) moveValue(move *movereq) error{
 						if err := txn.CommitOnly(nil, comCount); err == errMultiCom|| err ==ErrConflict {
 							 //other concurrent problems happen
 							 txn.Discard()
+							 //log.Printf("stupid retry!\n")
 							 goto retry
 					 } else if err != nil{
 						 	 //unexpected error
@@ -1131,6 +1144,7 @@ func (db *DB) moveValue(move *movereq) error{
 
 				} else if !item.IsInLSM() && move.moveToLSM{
 					//log.Printf("move to LSM!\n")
+
 					err = txn.LevelDBSet(k, v);
 					//if transaction too big! commit now
 					if  err != nil {
@@ -1139,6 +1153,7 @@ func (db *DB) moveValue(move *movereq) error{
 						if err := txn.CommitOnly(nil, comCount); err == errMultiCom|| err ==ErrConflict {
 							 //other concurrent problems happen
 							 txn.Discard()
+							 //log.Printf("stupid retry!\n")
 							 goto retry
 					 } else if err != nil{
 						 	 //unexpected error
@@ -1167,7 +1182,7 @@ func (db *DB) moveValue(move *movereq) error{
 				return err
 		}
 		db.mgr.SetInLSM(move.start, move.end, move.moveToLSM)
-		log.Printf("good!\n")
+		//log.Printf("good! Move %d records in tota\n",tnum)
 
 		return nil
 }

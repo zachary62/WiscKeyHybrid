@@ -102,6 +102,17 @@ type Options struct {
 
 	// Truncate value log to delete corrupt data, if any. Would not truncate if ReadOnly is set.
 	Truncate bool
+
+	// Length of segment table in Manager
+	Seglen uint32
+	// Boiling Point for Manager
+	Bp	int32
+	// Freezing Point for Manager
+	Fp 	int32
+	// Cooling Point for Manager
+	Cp	int32
+	// Whether load Segment Table
+	LoadSegM bool
 }
 
 // DefaultOptions sets a list of recommended options for good performance.
@@ -131,6 +142,11 @@ var DefaultOptions = Options{
 	ValueLogMaxEntries: 1000000,
 	ValueThreshold:     32,
 	Truncate:           false,
+	Seglen:							10,
+	Bp:									4,
+	Fp:								 	2,
+	Cp:									10,
+	LoadSegM:			      false,
 }
 
 // LSMOnlyOptions follows from DefaultOptions, but sets a higher ValueThreshold so values would
