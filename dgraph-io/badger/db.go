@@ -351,6 +351,11 @@ func Open(opt Options) (db *DB, err error) {
 // cause panic.
 func (db *DB) Close() (err error) {
 	db.elog.Printf("Closing database")
+
+	if SendSync == false {
+		db.mgr.FlushdSeg()
+	}
+
 	// Stop value GC first.
 	db.closers.valueGC.SignalAndWait()
 
@@ -694,7 +699,7 @@ func (db *DB) doMove(lc *y.Closer) {
 	defer lc.Done()
 	pendingCh := make(chan struct{}, 1)
 	moveRequest := func(move *movereq) {
-		if err := db.moveValue(move); err != nil {
+		if err := db.MoveValue(move); err != nil {
 			log.Printf("ERROR in Badger::writeRequests: %v", err)
 		}
 		<-pendingCh
@@ -1073,6 +1078,9 @@ func (db *DB) Size() (lsm int64, vlog int64) {
 //Wait time for move process grows gradually
 //this is to avoid rush hour
 func growWait(t int) int{
+	if !SendSync {
+		return 0
+	}
 	t = t*2 +20
 	if t >=5000 {
 		return 5000
@@ -1084,7 +1092,7 @@ func growWait(t int) int{
 // this should be done lazily
 // should not conflict with other transaction
 // movaValue will move iff the destination and current place are different and value size is smaller than 62KB
-func (db *DB) moveValue(move *movereq) error{
+func (db *DB) MoveValue(move *movereq) error{
 	//log.Printf("move from %s to %s whether to LSM %t\n", move.start, move.end, move.moveToLSM)
 	t := 0
 	tnum := 0

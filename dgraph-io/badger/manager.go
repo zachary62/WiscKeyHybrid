@@ -9,6 +9,8 @@ import (
 	"os"
 )
 
+var SendSync = false
+
 type segcache struct {
 	sync.RWMutex
 	start []byte
@@ -73,9 +75,9 @@ func (mgr *manager) AddSeg(start []byte, end []byte, heat int32) {
 		start, end = end, start
 	}
 	move := mgr.segt.StoreSeg(start, end, heat)
-	if move && heat > 0 {
+	if SendSync && move && heat > 0 {
 		mgr.db.SendTomoveCh(start,end,true)
-	} else if move && heat < 0 {
+	} else if SendSync && move && heat < 0 {
 		mgr.db.SendTomoveCh(start,end,false)
 	}
 }
@@ -89,8 +91,10 @@ func (mgr *manager) SetInLSM(start []byte, end []byte, inLSM bool) {
 
 func (mgr *manager) Cooling(cool float32) {
 	slice := mgr.segt.Cooling(cool)
-	for i := 0; i < len(slice); i = i + 2 {
-		mgr.db.SendTomoveCh(slice[i],slice[i+1],false)
+	if SendSync{
+		for i := 0; i < len(slice); i = i + 2 {
+			mgr.db.SendTomoveCh(slice[i],slice[i+1],false)
+		}
 	}
 }
 
@@ -126,4 +130,16 @@ func (mgr *manager) WriteSeg() {
 
 func (mgr *manager) LoadSeg() {
 	mgr.segt.LoadTable(mgr.db.opt.Dir + string(os.PathSeparator) + "Segtable.data")
+}
+
+func (mgr *manager) FlushdSeg() {
+	s := mgr.segt.FlushAll()
+	if !SendSync{
+		for i := 0; i < len(s[0]); i = i + 2 {
+			mgr.db.SendTomoveCh(s[0][i],s[0][i+1],false)
+		}
+		for i := 0; i < len(s[1]); i = i + 2 {
+			mgr.db.SendTomoveCh(s[1][i],s[1][i+1],true)
+		}
+	}
 }
