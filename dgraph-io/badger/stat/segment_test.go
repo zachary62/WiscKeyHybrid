@@ -4,8 +4,8 @@ import (
 	"testing"
 	"sync"
 	"github.com/dgraph-io/badger/y"
-	// "io/ioutil"
-	// "os"
+	"io/ioutil"
+	"os"
 )
 
 func TestAddheat(t *testing.T) {
@@ -329,36 +329,40 @@ func TestOverlapCoalesce3(t *testing.T) {
 	}
 }
 
-// func TestWriteLoad(t *testing.T) {
-// 	t.Log("Testing writing and loading table ... ")
-// 	dir, err := ioutil.TempDir("", "badgerwl")
-// 	if err != nil {
-// 		t.Errorf("Unexpected error while using temporal directory %s.", err)
-// 	}
-// 	dir = dir + string(os.PathSeparator) + "table"
-// 	ss1 := NewSegTable(10,0,0)
-// 	ss1.segarray[0] = segstat{5,true,true,[]byte{5,2},[]byte{7,8}}
-//   ss1.segarray[1] = segstat{119,false,true,[]byte{9},[]byte{4,8,10}}
-// 	ss1.segarray[2] = segstat{119,false,false,[]byte{9},[]byte{4,8,10}}
-// 	ss1.SaveTable(dir)
-// 	ss2 := NewSegTable(10,0,0)
-// 	ss2.LoadTable(dir)
-// 	for i := 0; i < 3; i++{
-// 		if ss1.segarray[i].valid != ss2.segarray[i].valid{
-// 			t.Errorf("The %d segments have different valid status in different tables, first table %t when second table %t.",i,ss1.segarray[i].valid,ss2.segarray[i].valid)
-// 		}
-// 		if !ss1.segarray[i].valid{
-// 			continue
-// 		}
-// 		if y.ComparePureKeys(ss1.segarray[i].start,ss2.segarray[i].start) != 0{
-// 			t.Errorf("The %d segments have different starts, the first is %v, the sond is %v.", i,ss1.segarray[i].start,ss2.segarray[i].start)
-// 		}
-// 		if y.ComparePureKeys(ss1.segarray[i].end,ss2.segarray[i].end) != 0{
-// 			t.Errorf("The %d segments have different starts, the first is %v, the sond is %v.", i,ss1.segarray[i].end,ss2.segarray[i].end)
-// 		}
-// 	}
-//
-// }
+func TestWriteLoad(t *testing.T) {
+	t.Log("Testing writing and loading table ... ")
+	dir, err := ioutil.TempDir("", "badgerwl")
+	defer os.RemoveAll(dir)
+	if err != nil {
+		t.Errorf("Unexpected error while using temporal directory %s.", err)
+	}
+	dir = dir + string(os.PathSeparator) + "table"
+	ss1 := NewSegTable(10,0,0)
+	ss1.segarray[0] = segstat{5,true,true,[]byte{5,2},[]byte{7,8}}
+  ss1.segarray[1] = segstat{119,false,true,[]byte{9},[]byte{4,8,10}}
+	ss1.segarray[2] = segstat{119,false,false,[]byte{9},[]byte{4,8,10}}
+	ss1.SaveTable(dir)
+	ss2 := NewSegTable(10,0,0)
+	ss2.LoadTable(dir)
+	for i := 0; i < 3; i++{
+		if ss1.segarray[i].valid != ss2.segarray[i].valid{
+			t.Errorf("The %d segments have different valid status in different tables, first table %t when second table %t.",i,ss1.segarray[i].valid,ss2.segarray[i].valid)
+		}
+		if !ss1.segarray[i].valid{
+			continue
+		}
+		if y.ComparePureKeys(ss1.segarray[i].start,ss2.segarray[i].start) != 0{
+			t.Errorf("The %d segments have different starts, the first is %v, the sond is %v.", i,ss1.segarray[i].start,ss2.segarray[i].start)
+		}
+		if y.ComparePureKeys(ss1.segarray[i].end,ss2.segarray[i].end) != 0{
+			t.Errorf("The %d segments have different starts, the first is %v, the sond is %v.", i,ss1.segarray[i].end,ss2.segarray[i].end)
+		}
+	}
+
+	if ss2.curr != 2{
+		t.Errorf("Segments have different curr, the first is 2, the second is %d.", ss2.curr)
+	}
+}
 
 func TestFlush(t *testing.T) {
 	t.Log("Testing flushing of SegTable ... ")
@@ -388,4 +392,151 @@ func TestFlush(t *testing.T) {
 	if y.ComparePureKeys(s[1][0],[]byte{60}) != 0 || y.ComparePureKeys(s[1][1],[]byte{69}) != 0{
 		t.Errorf("The flush segment should be [60, 69], but %v, %v instead.",s[1][0],s[1][1])
 	}
+}
+
+// Test curr denotes right number of segments in the table
+func TestCurr(t *testing.T) {
+	t.Log("Testing writing and loading table ... ")
+	dir, err := ioutil.TempDir("", "badgerwl")
+	defer os.RemoveAll(dir)
+	if err != nil {
+		t.Errorf("Unexpected error while using temporal directory %s.", err)
+	}
+	dir = dir + string(os.PathSeparator) + "table"
+	ss1 := NewSegTable(10,10,5)
+	ss1.StoreSeg([]byte{50}, []byte{69}, 5)
+	ss1.StoreSeg([]byte{10}, []byte{29}, 15)
+	ss1.Cooling(0.1)
+	ss1.StoreSeg([]byte{5}, []byte{29}, 10)
+	ss1.StoreSeg([]byte{30}, []byte{35}, 5)
+	ss1.Cooling(0.5)
+	ss1.StoreSeg([]byte{10}, []byte{29}, 5)
+	ss1.StoreSeg([]byte{5}, []byte{29}, 10)
+	ss1.StoreSeg([]byte{30}, []byte{35}, 5)
+	ss1.Cooling(0.8)
+	ss1.SaveTable(dir)
+	ss2 := NewSegTable(10,10,5)
+	ss2.LoadTable(dir)
+
+	if ss1.curr != ss2.curr{
+		t.Errorf("Segments have different curr, the first is %d, the second is %d.",ss1.curr, ss2.curr)
+	}
+}
+
+// Test Coalesce when Table size is larger than target
+func TestCoalesce1(t *testing.T) {
+		t.Log("Testing Coalesce when Table size is larger than target ... ")
+		segt := NewSegTable(1,10,3)
+		segt.StoreSeg([]byte{5}, []byte{10}, 2)
+	  segt.StoreSeg([]byte{15}, []byte{40}, 2)
+	  segt.StoreSeg([]byte{8}, []byte{30}, 2)
+		// should coalesce because 5,10 is smaller than 15,40
+		if heat,end,_,find := segt.FindSeg([]byte{5}); !find || heat != 2 || y.ComparePureKeys(end,[]byte{30}) != 0{
+			t.Errorf("Expected find seg with heat of 2, end at {30}, but find is %t, the heat was %d and end is %v instead.", find, heat, end)
+		}
+}
+
+// Test Coalesce when Table size is larger than target
+// This should not pass because current implementation compares both ends of key
+// should find a way to compare length
+// func TestCoalesce2(t *testing.T) {
+// 		t.Log("Testing Coalesce when Table size is larger than target ... ")
+// 		segt := NewSegTable(1,10,3)
+// 		segt.StoreSeg([]byte{15}, []byte{40}, 2)
+// 		segt.StoreSeg([]byte{5}, []byte{10}, 2)
+// 	  segt.StoreSeg([]byte{8}, []byte{30}, 2)
+// 		// should coalesce because 5,10 is smaller than 15,40
+// 		if heat,end,_,find := segt.FindSeg([]byte{5}); !find || heat != 2 || y.ComparePureKeys(end,[]byte{30}) != 0{
+// 			t.Errorf("Expected find seg with heat of 2, end at {30}, but find is %t, the heat was %d and end is %v instead.", find, heat, end)
+// 		}
+// }
+
+// Test Coalesce when Table size is larger than target
+func TestCoalesce3(t *testing.T) {
+		t.Log("Testing Coalesce when Table size is larger than target ... ")
+		segt := NewSegTable(1,10,3)
+		segt.StoreSeg([]byte{5}, []byte{30}, 2)
+	  segt.StoreSeg([]byte{15}, []byte{25}, 2)
+	  segt.StoreSeg([]byte{5}, []byte{40}, 2)
+		// should coalesce because 5,10 is smaller than 15,40
+		if heat,end,_,find := segt.FindSeg([]byte{5}); !find || heat != 2 || y.ComparePureKeys(end,[]byte{40}) != 0{
+			t.Errorf("Expected find seg with heat of 2, end at {40}, but find is %t, the heat was %d and end is %v instead.", find, heat, end)
+		}
+}
+
+// Test Coalesce when Table size is larger than target
+func TestCoalesce4(t *testing.T) {
+		t.Log("Testing Coalesce when Table size is larger than target ... ")
+		segt := NewSegTable(1,10,3)
+	  segt.StoreSeg([]byte{15}, []byte{25}, 2)
+		segt.StoreSeg([]byte{5}, []byte{30}, 2)
+	  segt.StoreSeg([]byte{5}, []byte{40}, 2)
+		// should coalesce because 5,10 is smaller than 15,40
+		if heat,end,_,find := segt.FindSeg([]byte{5}); !find || heat != 2 || y.ComparePureKeys(end,[]byte{40}) != 0{
+			t.Errorf("Expected find seg with heat of 2, end at {40}, but find is %t, the heat was %d and end is %v instead.", find, heat, end)
+		}
+}
+
+// Test divide of hot segments
+func TestDivide1 (t *testing.T) {
+		t.Log("Testing divide of hot segments ... ")
+		segt := NewSegTable(10,10,3)
+	  segt.StoreSeg([]byte{0}, []byte{10}, 15)
+	  segt.StoreSeg([]byte{2}, []byte{5}, 15)
+
+		if heat,end,_,find := segt.FindSeg([]byte{1}); !find || heat != 15 || y.ComparePureKeys(end,[]byte{2}) != 0{
+			t.Errorf("Expected find seg with heat of 15, end at {2}, but find is %t, the heat was %d and end is %v instead.", find, heat, end)
+		}
+		if heat,end,_,find := segt.FindSeg([]byte{3}); !find || heat != 30 || y.ComparePureKeys(end,[]byte{5}) != 0{
+			t.Errorf("Expected find seg with heat of 30, end at {5}, but find is %t, the heat was %d and end is %v instead.", find, heat, end)
+		}
+		if heat,end,_,find := segt.FindSeg([]byte{6}); !find || heat != 15 || y.ComparePureKeys(end,[]byte{10}) != 0{
+			t.Errorf("Expected find seg with heat of 15, end at {10}, but find is %t, the heat was %d and end is %v instead.", find, heat, end)
+		}
+}
+
+// Test divide of hot segments
+func TestDivide2 (t *testing.T) {
+		t.Log("Testing divide of hot segments ... ")
+		segt := NewSegTable(10,10,3)
+	  segt.StoreSeg([]byte{0}, []byte{10}, 15)
+	  segt.StoreSeg([]byte{2}, []byte{5}, 5)
+		segt.StoreSeg([]byte{2}, []byte{5}, 10)
+
+		if heat,end,_,find := segt.FindSeg([]byte{1}); !find || heat != 15 || y.ComparePureKeys(end,[]byte{2}) != 0{
+			t.Errorf("Expected find seg with heat of 15, end at {2}, but find is %t, the heat was %d and end is %v instead.", find, heat, end)
+		}
+		if heat,end,_,find := segt.FindSeg([]byte{3}); !find || heat != 30 || y.ComparePureKeys(end,[]byte{5}) != 0{
+			t.Errorf("Expected find seg with heat of 30, end at {5}, but find is %t, the heat was %d and end is %v instead.", find, heat, end)
+		}
+		if heat,end,_,find := segt.FindSeg([]byte{6}); !find || heat != 15 || y.ComparePureKeys(end,[]byte{10}) != 0{
+			t.Errorf("Expected find seg with heat of 15, end at {10}, but find is %t, the heat was %d and end is %v instead.", find, heat, end)
+		}
+}
+
+// Test expand of hot segments
+func TestExpand1 (t *testing.T) {
+		t.Log("Testing expand of hot segments ... ")
+		segt := NewSegTable(10,10,3)
+		segt.StoreSeg([]byte{6}, []byte{8}, 15)
+		segt.StoreSeg([]byte{2}, []byte{5}, 15)
+		segt.StoreSeg([]byte{1}, []byte{10}, 15)
+
+		if heat,end,_,find := segt.FindSeg([]byte{1}); !find || heat != 45 || y.ComparePureKeys(end,[]byte{10}) != 0{
+			t.Errorf("Expected find seg with heat of 45, end at {10}, but find is %t, the heat was %d and end is %v instead.", find, heat, end)
+		}
+}
+
+// Test expand of hot segments
+func TestExpand2 (t *testing.T) {
+		t.Log("Testing expand of hot segments ... ")
+		segt := NewSegTable(10,10,3)
+		segt.StoreSeg([]byte{6}, []byte{8}, 15)
+		segt.StoreSeg([]byte{2}, []byte{5}, 15)
+		segt.StoreSeg([]byte{1}, []byte{10}, 5)
+		segt.StoreSeg([]byte{1}, []byte{10}, 10)
+
+		if heat,end,_,find := segt.FindSeg([]byte{1}); !find || heat != 45 || y.ComparePureKeys(end,[]byte{10}) != 0{
+			t.Errorf("Expected find seg with heat of 45, end at {10}, but find is %t, the heat was %d and end is %v instead.", find, heat, end)
+		}
 }

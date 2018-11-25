@@ -549,7 +549,6 @@ func (it *Iterator) fill(item *Item) {
 
 	item.version = y.ParseTs(it.iitr.Key())
 	item.key = y.SafeCopy(item.key, y.ParseKey(it.iitr.Key()))
-
 	item.vptr = y.SafeCopy(item.vptr, vs.Value)
 	item.val = nil
 	if it.opt.PrefetchValues {

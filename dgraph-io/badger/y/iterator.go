@@ -20,7 +20,7 @@ import (
 	"bytes"
 	"container/heap"
 	"encoding/binary"
-
+	//"log"
 	"github.com/pkg/errors"
 )
 
@@ -59,6 +59,7 @@ func (v *ValueStruct) EncodedSize() uint16 {
 
 // Decode uses the length of the slice to infer the length of the Value field.
 func (v *ValueStruct) Decode(b []byte) {
+	//log.Print(len(b))
 	v.Meta = b[0]
 	v.UserMeta = b[1]
 	var sz int
