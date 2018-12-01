@@ -1,14 +1,15 @@
 # Managed Storage Hierarchy in WiscKey
 ## Introduction
-While WiscKey has an overall better performance than LevelDB, it has a poor range query performance
-when value size is small. Therefore, we could design a managed storage hierarchy to combine the
-performance advantages of LevelDB with Wisckey by storing the frequently range queried data into LSM
-tree directly.
+[WiscKey](https://www.usenix.org/system/files/conference/fast16/fast16-papers-lu.pdf) exploits the high parallel random-read performance of SSD by seperating value from key. While WiscKey has an overall better performance than LevelDB, it has a poor range query performance when value size is small. Therefore, we design a managed storage hierarchy to combine the performance advantages of LevelDB with Wisckey by storing the frequently range queried data into LSM tree directly. The range query performance of data from LSM tree and vLog is shown below.
+
+![illustration](image/wisckey.png)
+
+Managed storage hierarchy includes three parts: Migration Process, Statistics and Manager. 
 
 ![illustration](image/manage.png)
 
 During the data load, the storage manager should decide where the values will be inserted. For value
-size smaller than 4 bytes, it is directly inserted into LSM tree because it is smaller than the address size.
+size smaller than 4 bytes, it is directly inserted into LSM tree because it is smaller than the pointer size.
 For value size larger than 64 KB, it is directly inserted into vLog because range queries perform well
 when value size is large. If value size is between 4 bytes and 64 KB, the choice is based on the statistics
 of current storage and range query pattern to achieve the following goals:
@@ -20,7 +21,7 @@ manager should move values from the LSM tree to vLog to decrease its size.
 •  Values that are more likely to be range queried in the future should stay at LSM tree. The
 prediction is based on the previous range query history in the statistics.
 
-In order to better predict the range query pattern, we utilize temporal locality: the keys are range
+In order to better predict the range query pattern, we utilize temporal and spatial locality: the key ranges that are range
 queried before are more likely to the range queried in the future. This principle is from the design of
 cache. However, cache deals with units of data while we need to consider ranges of data. We would
 always receive a statistic in form of [start key of range query, end key of range query] after user uses
@@ -31,7 +32,7 @@ need to deal with the statistics of a huge range.
 
 ## Project Status
 This project is based on https://github.com/dgraph-io/badger.
-After installing the badger, replace the draph-io in $GOPATH.
+After installing the badger, replace the /draph-io directory in $GOPATH with /draph-io in our project.
 To load key-value pair directly into LSM-tree as LevelDB, you can use the txn.LevelDBSet() method:
 
 ```go
@@ -42,12 +43,13 @@ if err != nil {
 ```
 
 A more smart Set method is under development! You can use txn.HybridSet() method:
+
 ```go
 err := txn.HybridSet([]byte("key"), []byte("value"))
 if err != nil {
 	return err
 }
 ```
-This HybridSet will store the data according to your usage patterns.
+This HybridSet will store the data according to your usage patterns in Statistics.
 
 The graphs of the results are made using zplot http://pages.cs.wisc.edu/~remzi/Zplot/z-plot/docs/index.html.
