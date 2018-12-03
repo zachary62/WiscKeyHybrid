@@ -44,6 +44,6 @@ if err != nil {
 ```
 This HybridSet will store the data according to your usage patterns in Statistics.
 
-Current, we are trying to find the best tuning. 
+Currently, we are trying to find the best tuning. 
 
 The graphs of the results are made using zplot http://pages.cs.wisc.edu/~remzi/Zplot/z-plot/docs/index.html.
